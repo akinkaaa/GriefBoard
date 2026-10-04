@@ -1,0 +1,15 @@
+name: GriefBoard
+version: 1.0
+main: ru.griefboard.GriefBoard
+api-version: 1.16
+description: Sidebar scoreboard in GhostGrief style
+
+commands:
+  griefboard:
+    description: Управление скорбордом
+    aliases: [gsb]
+    permission: griefboard.admin
+
+permissions:
+  griefboard.admin:
+    default: op
