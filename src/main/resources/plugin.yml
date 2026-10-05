@@ -9,7 +9,15 @@ commands:
     description: Управление скорбордом
     aliases: [gsb]
     permission: griefboard.admin
+  rank:
+    description: Выдача рангов
+    permission: griefboard.admin
+  rtp:
+    description: Случайная телепортация в основной мир
+    permission: griefboard.rtp
 
 permissions:
+  griefboard.rtp:
+    default: true
   griefboard.admin:
     default: op

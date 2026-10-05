@@ -4,18 +4,43 @@ update-ticks: 20
 title: "&#FFB020&lГРИФ #1"
 
 no-clan: "Без клана"
-default-rank: "&7Игрок"
 start-elo: 1000
 
-# Ранги проверяются сверху вниз, первый подходящий по праву показывается.
-# Если используешь LuckPerms — права вида group.<имя группы>
+# ---------- РАНГИ ----------
+# Ранг, который получает новый игрок (название из списка ниже)
+default-rank: "player"
+
+# Выдача ранга: /rank set <ник> <ранг>   (нужен OP)
+#   display      - как ранг выглядит в скорборде, табе и чате
+#   op           - true = ранг даёт права оператора (все права)
+#   permissions  - список прав, которые получает ранг (можно пустой [])
 ranks:
-  dragon:
-    permission: "group.dragon"
-    display: "&d◆ &f&l[DRAGON]"
-  vip:
-    permission: "group.vip"
-    display: "&a&l[VIP]"
+  admin:
+    display: "&#FF4500&l[ADMIN]"
+    op: true
+    permissions: []
+  moder:
+    display: "&#3B82F6&l[MODER]"
+    op: false
+    permissions:
+      - "bukkit.command.kick"
+      - "bukkit.command.ban.player"
+      - "bukkit.command.unban.player"
+      - "bukkit.command.teleport"
+  builder:
+    display: "&#00D4C8&l[BUILDER]"
+    op: false
+    permissions:
+      - "worldedit.*"
+      - "bukkit.command.gamemode"
+  tester:
+    display: "&#FACC15&l[TESTER]"
+    op: false
+    permissions: []
+  player:
+    display: "&8[&7PLAYER&8]"
+    op: false
+    permissions: []
 
 # Плейсхолдеры: {player} {rank} {clan} {kills} {deaths} {elo}
 #               {balance} {pillikov} {romashki} {ping}
@@ -54,4 +79,22 @@ tab:
     - "&cIP: &fserver.com"
     - "&c&m                                        "
   # Как выглядит ник в списке. Пустая строка = не менять
-  name-format: "&8[{rank}&8] &f{player}"
+  name-format: "{rank} &f{player}"
+
+# ---------- ЧАТ ----------
+# Плейсхолдеры: {rank} {player} {message}
+chat:
+  enabled: true
+  format: "{rank} &f{player}&8: &7{message}"
+
+# ---------- RTP и яма ----------
+rtp:
+  world: "world"
+  lobby-world: "lobby"
+  min-radius: 300
+  max-radius: 10000
+  only-from-lobby: true
+  cooldown-seconds: 5
+pit:
+  radius: 5
+  trigger-below: 58
