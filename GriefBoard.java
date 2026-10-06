@@ -3,6 +3,7 @@ package ru.griefboard;
 import net.md_5.bungee.api.ChatColor;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.Material;
 import org.bukkit.Statistic;
 import org.bukkit.World;
@@ -19,6 +20,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.permissions.PermissionAttachment;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scoreboard.DisplaySlot;
 import org.bukkit.scoreboard.Objective;
@@ -42,6 +44,8 @@ public class GriefBoard extends JavaPlugin implements Listener {
     private FileConfiguration data;
     private final Map<UUID, Scoreboard> boards = new HashMap<>();
     private int taskId = -1;
+    private AuthManager auth;
+    private final Map<UUID, PermissionAttachment> attachments = new HashMap<>();
     private final Set<UUID> busy = new HashSet<>();
     private final Map<UUID, Long> rtpCooldown = new HashMap<>();
     private final Random random = new Random();
@@ -55,18 +59,30 @@ public class GriefBoard extends JavaPlugin implements Listener {
         dataFile = new File(getDataFolder(), "data.yml");
         data = YamlConfiguration.loadConfiguration(dataFile);
         Bukkit.getPluginManager().registerEvents(this, this);
-        for (Player p : Bukkit.getOnlinePlayers()) createBoard(p);
+        if (getConfig().getBoolean("auth.enabled", true)) {
+            auth = new AuthManager(this);
+            auth.enable();
+        }
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            applyRank(p);
+            createBoard(p);
+        }
         startTask();
     }
 
     @Override
     public void onDisable() {
         if (taskId != -1) Bukkit.getScheduler().cancelTask(taskId);
+        if (auth != null) auth.disable();
         saveData();
         for (Player p : Bukkit.getOnlinePlayers()) {
             p.setScoreboard(Bukkit.getScoreboardManager().getMainScoreboard());
             p.setPlayerListName(null);
             p.setPlayerListHeaderFooter("", "");
+            PermissionAttachment att = attachments.remove(p.getUniqueId());
+            if (att != null) {
+                try { p.removeAttachment(att); } catch (IllegalArgumentException ignored) { }
+            }
         }
         boards.clear();
     }
@@ -83,12 +99,14 @@ public class GriefBoard extends JavaPlugin implements Listener {
 
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
+        applyRank(e.getPlayer());
         createBoard(e.getPlayer());
     }
 
     @EventHandler
     public void onQuit(PlayerQuitEvent e) {
         boards.remove(e.getPlayer().getUniqueId());
+        attachments.remove(e.getPlayer().getUniqueId());
     }
 
     // ---------- scoreboard ----------
@@ -158,36 +176,113 @@ public class GriefBoard extends JavaPlugin implements Listener {
                 .replace("{tps}", String.format(Locale.US, "%.1f", getTps()));
     }
 
-    private String getRank(Player p) {
+    // ---------- свои ранги (без LuckPerms) ----------
+
+    /** Ключ ранга игрока: сохранённый командой /rank set или ранг по умолчанию. */
+    private String rankKey(UUID id) {
         ConfigurationSection ranks = getConfig().getConfigurationSection("ranks");
-        if (ranks != null) {
-            // 1) основной способ: основная (primary) группа игрока в LuckPerms.
-            //    Ранг определяется только командой /lp user <ник> parent set <группа>,
-            //    права вроде * или OP на отображение не влияют.
-            if (Bukkit.getPluginManager().isPluginEnabled("LuckPerms")) {
-                try {
-                    String group = LpHook.primaryGroup(p.getUniqueId());
-                    if (group != null) {
-                        for (String key : ranks.getKeys(false)) {
-                            if (key.equalsIgnoreCase(group)) {
-                                return ranks.getString(key + ".display", key);
-                            }
-                        }
-                        return getConfig().getString("default-rank", "&8[&7PLAYER&8]");
-                    }
-                } catch (Throwable ignored) {
-                    // LuckPerms API недоступен — используем запасной способ ниже
-                }
-            }
-            // 2) запасной способ: по праву group.<имя>
+        String stored = data.getString("ranks." + id);
+        if (stored != null && ranks != null) {
             for (String key : ranks.getKeys(false)) {
-                String perm = ranks.getString(key + ".permission", "");
-                if (!perm.isEmpty() && p.hasPermission(perm)) {
-                    return ranks.getString(key + ".display", key);
-                }
+                if (key.equalsIgnoreCase(stored)) return key;
             }
         }
-        return getConfig().getString("default-rank", "&8[&7PLAYER&8]");
+        return getConfig().getString("default-rank", "player");
+    }
+
+    /** Красивое название ранга для скорборда, таба и чата. */
+    private String getRank(Player p) {
+        ConfigurationSection ranks = getConfig().getConfigurationSection("ranks");
+        String key = rankKey(p.getUniqueId());
+        if (ranks != null && ranks.isConfigurationSection(key)) {
+            return ranks.getString(key + ".display", key);
+        }
+        return key; // если default-rank записан обычным текстом
+    }
+
+    /** Выдаёт игроку права ранга (список permissions и флаг op) из config.yml. */
+    private void applyRank(Player p) {
+        PermissionAttachment old = attachments.remove(p.getUniqueId());
+        if (old != null) {
+            try { p.removeAttachment(old); } catch (IllegalArgumentException ignored) { }
+        }
+        ConfigurationSection ranks = getConfig().getConfigurationSection("ranks");
+        String key = rankKey(p.getUniqueId());
+        boolean wantsOp = false;
+        if (ranks != null && ranks.isConfigurationSection(key)) {
+            wantsOp = ranks.getBoolean(key + ".op", false);
+            PermissionAttachment att = p.addAttachment(this);
+            for (String perm : ranks.getStringList(key + ".permissions")) {
+                if (perm.startsWith("-")) att.setPermission(perm.substring(1), false);
+                else att.setPermission(perm, true);
+            }
+            attachments.put(p.getUniqueId(), att);
+        }
+        // OP выдаётся рангом только если ранг так настроен; выданный рангом OP
+        // снимается при смене на ранг без op. Вручную выданный OP не трогаем.
+        String opPath = "granted-op." + p.getUniqueId();
+        if (wantsOp) {
+            if (!p.isOp()) {
+                p.setOp(true);
+                data.set(opPath, true);
+                saveData();
+            }
+        } else if (data.getBoolean(opPath, false)) {
+            p.setOp(false);
+            data.set(opPath, null);
+            saveData();
+        }
+    }
+
+    private boolean handleRank(CommandSender sender, String[] args, String label) {
+        ConfigurationSection ranks = getConfig().getConfigurationSection("ranks");
+        if (args.length == 1 && args[0].equalsIgnoreCase("list")) {
+            sender.sendMessage("§eРанги: §f" + (ranks == null ? "-" : String.join(", ", ranks.getKeys(false))));
+            return true;
+        }
+        if (args.length == 2 && (args[0].equalsIgnoreCase("info") || args[0].equalsIgnoreCase("reset"))) {
+            Player online = Bukkit.getPlayerExact(args[1]);
+            UUID id = online != null ? online.getUniqueId() : Bukkit.getOfflinePlayer(args[1]).getUniqueId();
+            if (args[0].equalsIgnoreCase("info")) {
+                sender.sendMessage("§eРанг " + args[1] + ": §f" + rankKey(id));
+            } else {
+                data.set("ranks." + id, null);
+                saveData();
+                if (online != null) {
+                    applyRank(online);
+                    updateBoard(online);
+                }
+                sender.sendMessage("§aРанг " + args[1] + " сброшен до ранга по умолчанию.");
+            }
+            return true;
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("set")) {
+            String key = null;
+            if (ranks != null) {
+                for (String k : ranks.getKeys(false)) {
+                    if (k.equalsIgnoreCase(args[2])) key = k;
+                }
+            }
+            if (key == null) {
+                sender.sendMessage("§cТакого ранга нет. Список: /" + label + " list");
+                return true;
+            }
+            Player online = Bukkit.getPlayerExact(args[1]);
+            UUID id = online != null ? online.getUniqueId() : Bukkit.getOfflinePlayer(args[1]).getUniqueId();
+            data.set("ranks." + id, key);
+            saveData();
+            if (online != null) {
+                applyRank(online);
+                updateBoard(online);
+            }
+            sender.sendMessage("§aРанг " + args[1] + " теперь: §f" + key);
+            return true;
+        }
+        sender.sendMessage("§e/" + label + " set <ник> <ранг>");
+        sender.sendMessage("§e/" + label + " reset <ник>");
+        sender.sendMessage("§e/" + label + " info <ник>");
+        sender.sendMessage("§e/" + label + " list");
+        return true;
     }
 
     private static String fmt(int n) {
@@ -346,6 +441,9 @@ public class GriefBoard extends JavaPlugin implements Listener {
 
     @Override
     public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
+        if (cmd.getName().equalsIgnoreCase("rank")) {
+            return handleRank(sender, args, label);
+        }
         if (cmd.getName().equalsIgnoreCase("rtp")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("Только для игроков.");
@@ -377,7 +475,10 @@ public class GriefBoard extends JavaPlugin implements Listener {
         if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
             reloadConfig();
             data = YamlConfiguration.loadConfiguration(dataFile);
-            for (Player p : Bukkit.getOnlinePlayers()) createBoard(p);
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                applyRank(p);
+                createBoard(p);
+            }
             startTask();
             sender.sendMessage("§aGriefBoard перезагружен.");
             return true;
@@ -394,6 +495,16 @@ public class GriefBoard extends JavaPlugin implements Listener {
             data.set("pit.z", l.getZ());
             saveData();
             sender.sendMessage("§aЦентр ямы установлен здесь.");
+            return true;
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("unregister")) {
+            if (auth == null) {
+                sender.sendMessage("§cВход и регистрация выключены в config.yml (auth.enabled).");
+            } else if (auth.unregister(args[1])) {
+                sender.sendMessage("§aАккаунт " + args[1] + " удалён, игрок зарегистрируется заново.");
+            } else {
+                sender.sendMessage("§cТакого аккаунта нет.");
+            }
             return true;
         }
         if (args.length == 4 && (args[0].equalsIgnoreCase("set") || args[0].equalsIgnoreCase("add"))) {
@@ -428,6 +539,7 @@ public class GriefBoard extends JavaPlugin implements Listener {
         }
         sender.sendMessage("§e/" + label + " reload");
         sender.sendMessage("§e/" + label + " setpit §7- центр ямы там, где ты стоишь");
+        sender.sendMessage("§e/" + label + " unregister <ник> §7- удалить аккаунт (пароль)");
         sender.sendMessage("§e/" + label + " set|add <ник> <balance|pillikov|romashki|elo|clan> <значение>");
         return true;
     }
@@ -436,7 +548,17 @@ public class GriefBoard extends JavaPlugin implements Listener {
     public List<String> onTabComplete(CommandSender sender, Command cmd, String alias, String[] args) {
         List<String> out = new ArrayList<>();
         if (cmd.getName().equalsIgnoreCase("rtp")) return out;
-        if (args.length == 1) out.addAll(Arrays.asList("reload", "set", "add", "setpit"));
+        if (cmd.getName().equalsIgnoreCase("rank")) {
+            if (args.length == 1) out.addAll(Arrays.asList("set", "reset", "info", "list"));
+            else if (args.length == 2 && !args[0].equalsIgnoreCase("list")) {
+                for (Player pl : Bukkit.getOnlinePlayers()) out.add(pl.getName());
+            } else if (args.length == 3 && args[0].equalsIgnoreCase("set")) {
+                ConfigurationSection r = getConfig().getConfigurationSection("ranks");
+                if (r != null) out.addAll(r.getKeys(false));
+            }
+            return out;
+        }
+        if (args.length == 1) out.addAll(Arrays.asList("reload", "set", "add", "setpit", "unregister"));
         else if (args.length == 2) for (Player p : Bukkit.getOnlinePlayers()) out.add(p.getName());
         else if (args.length == 3) out.addAll(FIELDS);
         return out;

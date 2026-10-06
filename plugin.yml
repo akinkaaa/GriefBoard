@@ -3,12 +3,23 @@ version: 1.0
 main: ru.griefboard.GriefBoard
 api-version: 1.16
 description: Sidebar scoreboard in GhostGrief style
-softdepend: [LuckPerms]
 
 commands:
   griefboard:
     description: Управление скорбордом
     aliases: [gsb]
+    permission: griefboard.admin
+  login:
+    description: Вход в аккаунт
+    aliases: [l, log]
+  register:
+    description: Регистрация
+    aliases: [reg]
+  changepassword:
+    description: Смена пароля
+    aliases: [changepass]
+  rank:
+    description: Выдача рангов
     permission: griefboard.admin
   rtp:
     description: Случайная телепортация в основной мир
